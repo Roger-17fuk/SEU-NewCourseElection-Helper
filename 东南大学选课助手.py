@@ -1,485 +1,247 @@
-# coding: utf-8
-from selenium import webdriver
-from selenium.webdriver.common.keys import Keys
-import random
-import time
-import datetime
 import os
 import sys
-import msvcrt
+import time
+import subprocess
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 
-chrome_options = webdriver.ChromeOptions()
-chrome_options.add_argument('--headless')
-chrome_options.add_argument('--disable-gpu')
-chrome_options.add_argument('--no-sandbox')
+# Configuration
+class Config:
+    ELEC_TURN = os.getenv('ELEC_TURN', '1')  # Default to turn 1 if not set
+    MAX_RETRIES = 3
+    RETRY_DELAY = 1
+    CLICK_DELAY = 0.5
+    WAIT_TIMEOUT = 20
 
+class Logger:
+    @staticmethod
+    def info(message):
+        print(f"[INFO] {message}")
+    
+    @staticmethod
+    def error(message):
+        print(f"[ERROR] {message}")
+    
+    @staticmethod
+    def success(message):
+        print(f"[SUCCESS] {message}")
+    
+    @staticmethod
+    def warning(message):
+        print(f"[WARNING] {message}")
 
-def Login():
-    global t
-    global error
-    global username
-    global password
-    global teacher
-    global driver
-    global class_wanted
-    global elecTurn
-
+def search_and_elect_class(driver, course_name, menu_index, button_index=0):
+    """
+    Reusable function to search for a course and elect it.
+    
+    Args:
+        driver: Selenium WebDriver instance
+        course_name: Name of the course to search for
+        menu_index: Menu index (0=第一轮, 1=系统推荐课程, 2=第二轮, 3=第三轮, 4=第四轮, 5=第五轮)
+        button_index: Index of the elect button (default: 0 for first result)
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
     try:
-        driver = webdriver.Chrome(executable_path='chromedriver', chrome_options=chrome_options)
-        driver.maximize_window()
-        driver.set_window_size(500, 10000)
-        url = "http://newxk.urp.seu.edu.cn/xsxk/profile/index.html"
-        driver.get(url)
+        Logger.info(f"Searching for course: {course_name} (menu_index={menu_index}, button_index={button_index})")
         
-        print("start to login\n")
-
-        print("\nplease wait.", end="")
-        successLogin=False
-        LoginTurn=1
-
-        driver.find_element_by_xpath(
-            '//*[@id="loginNameDiv"]/div/input').click()
-        driver.find_element_by_xpath(
-            '//*[@id="loginNameDiv"]/div/input').send_keys(username)
-        driver.find_element_by_xpath(
-            '//*[@id="loginPwdDiv"]/div/input').click()
-        driver.find_element_by_xpath(
-            '//*[@id="loginPwdDiv"]/div/input').send_keys(password)
-
-        while not successLogin:
-            driver.find_element_by_xpath(
-                '//*[@id="verifyCode"]').click()
-            driver.find_element_by_xpath(
-                '//*[@id="verifyCode"]').send_keys(str(0))
-            driver.find_element_by_xpath('//*[@id="loginDiv"]/button').click()
-            print(".", end="")
-            time.sleep(1)
-            try:
-                driver.find_element_by_xpath(
-                    '//*[@id="xsxkapp"]/div[4]/div/div[2]/div/table/tbody/tr['+str(elecTurn)+']/td/div/div/div[6]/div[2]/label/span[1]/span').click()
-                successLogin=True
-            except Exception as eLogin:
-                successLogin=False
-                print(".", end="")
-                LoginTurn=LoginTurn+1
-                time.sleep(1)
-
-        time.sleep(1)
+        # Step 1: Click the menu item to navigate to the correct selection turn
+        menu_items = driver.find_elements(By.XPATH, "//a[@class='menu-item']")
+        if menu_index >= len(menu_items):
+            Logger.error(f"Menu index {menu_index} out of range. Available items: {len(menu_items)}")
+            return False
         
-        print(".", end="")
-
-        time.sleep(1)
-        driver.find_element_by_xpath(
-           '//*[@id="xsxkapp"]/div[4]/div/div[3]/span/button[1]').click()
-        print(".", end="")
-
-        time.sleep(1)
-        driver.find_element_by_xpath(
-            '//*[@id="stundentinfoDiv"]/button').click()
-        print(".", end="")
-
-        time.sleep(2)
-        print(".\n\n")
-
-        checkUrl = driver.current_url
-        print("\n"+checkUrl+"\n")
-        if not checkUrl.startswith("http://newxk.urp.seu.edu.cn/xsxk/elective/"):
-            print('Login fail')
-            error = True
-            return
+        menu_items[menu_index].click()
+        time.sleep(Config.CLICK_DELAY)
+        Logger.info(f"Clicked menu item at index {menu_index}")
         
+        # Step 2: Find and fill the search input field
+        wait = WebDriverWait(driver, Config.WAIT_TIMEOUT)
+        search_input = wait.until(EC.presence_of_element_located((By.XPATH, "//input[@placeholder='请输入课程名称' or @placeholder='课程名称']")))
+        search_input.clear()
+        search_input.send_keys(course_name)
+        time.sleep(Config.CLICK_DELAY)
+        Logger.info(f"Entered course name: {course_name}")
         
-
-        print("login successfully!\n")
-        return
-
+        # Step 3: Click the search button
+        search_button = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), '搜索') or contains(text(), 'Search')]")))
+        search_button.click()
+        time.sleep(Config.CLICK_DELAY * 2)  # Wait for search results to load
+        Logger.info("Search button clicked, waiting for results...")
+        
+        # Step 4: Wait for search results and get all elect buttons
+        elect_buttons = wait.until(EC.presence_of_all_elements_located((By.XPATH, "//button[contains(text(), '选课') or contains(text(), 'Elect')]")))
+        
+        if button_index >= len(elect_buttons):
+            Logger.error(f"Button index {button_index} out of range. Available buttons: {len(elect_buttons)}")
+            return False
+        
+        # Step 5: Click the specified elect button
+        # Use ActionChains to handle potential stale elements
+        actions = ActionChains(driver)
+        actions.move_to_element(elect_buttons[button_index]).click().perform()
+        time.sleep(Config.CLICK_DELAY)
+        Logger.success(f"Clicked elect button at index {button_index}")
+        
+        # Step 6: Wait for confirmation or success message
+        try:
+            success_message = wait.until(EC.presence_of_element_located((By.XPATH, "//*[contains(text(), '成功') or contains(text(), '选课成功')]")), Config.WAIT_TIMEOUT)
+            Logger.success(f"Course {course_name} elected successfully!")
+            return True
+        except TimeoutException:
+            Logger.warning(f"No success confirmation for course {course_name}, but election may have succeeded")
+            return True
+            
+    except TimeoutException:
+        Logger.error(f"Timeout while searching for course: {course_name}")
+        return False
+    except NoSuchElementException as e:
+        Logger.error(f"Element not found while processing course {course_name}: {str(e)}")
+        return False
+    except StaleElementReferenceException:
+        Logger.warning(f"Stale element reference for course {course_name}, retrying...")
+        return False
     except Exception as e:
-        print('\tlogin fail')
-        error = True
-        return
+        Logger.error(f"Unexpected error while processing course {course_name}: {str(e)}")
+        return False
 
+def elect_courses(driver, courses):
+    """
+    Elect multiple courses using the refactored search_and_elect_class function.
+    
+    Args:
+        driver: Selenium WebDriver instance
+        courses: List of course dictionaries with keys: 'name', 'menu_index', 'button_index' (optional)
+    
+    Returns:
+        dict: Statistics of election results
+    """
+    stats = {
+        'total': len(courses),
+        'successful': 0,
+        'failed': 0,
+        'failed_courses': []
+    }
+    
+    for course in courses:
+        course_name = course.get('name')
+        menu_index = course.get('menu_index', 0)
+        button_index = course.get('button_index', 0)
+        
+        if not course_name:
+            Logger.warning("Course name not specified, skipping...")
+            stats['failed'] += 1
+            continue
+        
+        retries = 0
+        success = False
+        
+        while retries < Config.MAX_RETRIES and not success:
+            try:
+                success = search_and_elect_class(driver, course_name, menu_index, button_index)
+                if success:
+                    stats['successful'] += 1
+                else:
+                    retries += 1
+                    if retries < Config.MAX_RETRIES:
+                        Logger.info(f"Retrying course {course_name} (attempt {retries + 1}/{Config.MAX_RETRIES})")
+                        time.sleep(Config.RETRY_DELAY)
+            except Exception as e:
+                Logger.error(f"Exception during course election: {str(e)}")
+                retries += 1
+                if retries < Config.MAX_RETRIES:
+                    time.sleep(Config.RETRY_DELAY)
+        
+        if not success:
+            stats['failed'] += 1
+            stats['failed_courses'].append(course_name)
+    
+    return stats
+
+def print_election_statistics(stats):
+    """Print election statistics."""
+    Logger.info("=" * 50)
+    Logger.info("ELECTION STATISTICS")
+    Logger.info("=" * 50)
+    Logger.info(f"Total courses: {stats['total']}")
+    Logger.success(f"Successfully elected: {stats['successful']}")
+    Logger.error(f"Failed to elect: {stats['failed']}")
+    
+    if stats['failed_courses']:
+        Logger.warning("Failed courses:")
+        for course in stats['failed_courses']:
+            Logger.warning(f"  - {course}")
+    
+    Logger.info("=" * 50)
 
 def main():
-
+    """
+    Main function to orchestrate the course election process.
+    Supports multiple courses with all 5 menu items (turns).
+    """
+    Logger.info("Starting SEU Course Election Helper...")
+    Logger.info(f"Election Turn (ELEC_TURN): {Config.ELEC_TURN}")
+    
+    # Initialize WebDriver
     try:
-        finded = False
-        print("finding.", end="")
-
-
-        driver.find_element_by_xpath('//*[@id="xsxkapp"]/div/div[1]/ul/li[1]/i').click()
-        time.sleep(0.5)
-        print(".", end="")
-        driver.find_element_by_xpath('//*[@id="xsxkapp"]/div/div[1]/ul/li[2]').click()
-        time.sleep(1)
-        print(".", end="")
-
-        curpages = 1
-
-        driver.find_element_by_xpath(
-            '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(Keys.BACKSPACE)
-        driver.find_element_by_xpath(
-            '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(Keys.BACKSPACE)
-        driver.find_element_by_xpath(
-            '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(str(curpages))
-        driver.find_element_by_xpath(
-            '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[1]').click()
-        time.sleep(1)
-        print(".", end="")
-        pages = driver.find_element_by_class_name('number.active').text
-
-        while str(pages) == str(curpages) and not finded:
-            class_list = driver.find_elements_by_xpath(
-                '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[1]/div')
-            for cl in class_list:
-                class_num = cl.find_element_by_xpath(
-                    './/*[@class="el-card__body"]/div[2]/div/div[2]/span').text
-                print(".", end="")
-                if class_wanted[0:-5] == class_num:
-                    cl.click()
-                    time.sleep(0.2)
-                    print(".", end="")
-                    teacher_list=cl.find_elements_by_xpath(
-                        './/*[@class="card-list course-jxb el-row"]/div')
-                    for tl in teacher_list:
-                        print(".", end="")
-                        teacher_num=tl.find_element_by_xpath(
-                            './/*[@class="card-item head"]/div[1]/span[1]').text
-                        if class_wanted[-3:-1]==teacher_num[1:3]:
-                            print("\n\nfinded\n")
-                            finded = True
-                            Turn=1
-                            elected=False
-                            while not elected:
-                                print("the "+str(Turn)+" trail")
-                                Turn=Turn+1
-
-                                tmpErr=False
-                                while not tmpErr:
-                                    try:
-                                        tl.find_element_by_xpath('.//*[@class="el-row"]/button[2]').click()
-                                        tmpErr=True
-                                    except Exception as eTmp:
-                                        tmpErr=False
-
-                                tmpErr=False
-                                while not tmpErr:
-                                    try:
-                                        msgText=driver.find_element_by_xpath('/html/body/div[3]/div/div[2]/div[1]/div[2]/p').text
-                                        tmpErr=True
-                                    except Exception as eTmp:
-                                        tmpErr=False
-
-                                if not (driver.find_element_by_xpath('/html/body/div[3]/div/div[2]/div[1]/div[2]/p').text=="确认选择课程吗？"):
-                                    elected=True
-                                    break
-                                driver.find_element_by_xpath(
-                                    '/html/body/div[3]/div/div[3]/button[2]').click()
-                                
-                            
-                            print("\nelected!\n")
-                            break
-                    break
-            if not finded:
-                curpages = curpages+1
-                driver.find_element_by_xpath(
-                    '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(Keys.BACKSPACE)
-                driver.find_element_by_xpath(
-                    '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(Keys.BACKSPACE)
-                driver.find_element_by_xpath(
-                    '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys('%d' %curpages)
-                driver.find_element_by_xpath(
-                    '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[1]').click()
-                time.sleep(1)
-                print(".", end="")
-                pages = driver.find_element_by_class_name('number.active').text
-        
-        driver.find_element_by_xpath('//*[@id="xsxkapp"]/div/div[1]/ul/li[1]/i').click()
-        time.sleep(0.5)
-        print(".", end="")
-        driver.find_element_by_xpath('//*[@id="xsxkapp"]/div/div[1]/ul/li[4]').click()
-        time.sleep(1)
-        print(".", end="")
-
-        curpages = 1
-
-        driver.find_element_by_xpath(
-            '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(Keys.BACKSPACE)
-        driver.find_element_by_xpath(
-            '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(Keys.BACKSPACE)
-        driver.find_element_by_xpath(
-            '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(str(curpages))
-        driver.find_element_by_xpath(
-            '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[1]').click()
-        time.sleep(1)
-        print(".", end="")
-        pages = driver.find_element_by_class_name('number.active').text
-
-        while str(pages) == str(curpages) and not finded:
-            class_list = driver.find_elements_by_xpath(
-                '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[1]/div')
-            for cl in class_list:
-                class_num = cl.find_element_by_xpath(
-                    './/*[@class="el-card__body"]/div[2]/div/div[2]/span').text
-                print(".", end="")
-                if class_wanted[0:-5] == class_num:
-                    cl.click()
-                    time.sleep(0.2)
-                    print(".", end="")
-                    teacher_list=cl.find_elements_by_xpath(
-                        './/*[@class="card-list course-jxb el-row"]/div')
-                    for tl in teacher_list:
-                        print(".", end="")
-                        teacher_num=tl.find_element_by_xpath(
-                            './/*[@class="card-item head"]/div[1]/span[1]').text
-                        if class_wanted[-3:-1]==teacher_num[1:3]:
-                            print("\n\nfinded\n")
-                            finded = True
-                            Turn=1
-                            elected=False
-                            while not elected:
-                                print("the "+str(Turn)+" trail")
-                                Turn=Turn+1
-
-                                tmpErr=False
-                                while not tmpErr:
-                                    try:
-                                        tl.find_element_by_xpath('.//*[@class="el-row"]/button[2]').click()
-                                        tmpErr=True
-                                    except Exception as eTmp:
-                                        tmpErr=False
-
-                                tmpErr=False
-                                while not tmpErr:
-                                    try:
-                                        msgText=driver.find_element_by_xpath('/html/body/div[3]/div/div[2]/div[1]/div[2]/p').text
-                                        tmpErr=True
-                                    except Exception as eTmp:
-                                        tmpErr=False
-
-                                if not (driver.find_element_by_xpath('/html/body/div[3]/div/div[2]/div[1]/div[2]/p').text=="确认选择课程吗？"):
-                                    elected=True
-                                    break
-                                driver.find_element_by_xpath(
-                                    '/html/body/div[3]/div/div[3]/button[2]').click()
-                                
-                            
-                            print("\nelected!\n")
-                            break
-                    break
-            if not finded:
-                curpages = curpages+1
-                driver.find_element_by_xpath(
-                    '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(Keys.BACKSPACE)
-                driver.find_element_by_xpath(
-                    '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(Keys.BACKSPACE)
-                driver.find_element_by_xpath(
-                    '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys('%d' %curpages)
-                driver.find_element_by_xpath(
-                    '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[1]').click()
-                time.sleep(1)
-                print(".", end="")
-                pages = driver.find_element_by_class_name('number.active').text
-
-        driver.find_element_by_xpath('//*[@id="xsxkapp"]/div/div[1]/ul/li[1]/i').click()
-        time.sleep(0.5)
-        print(".", end="")
-        driver.find_element_by_xpath('//*[@id="xsxkapp"]/div/div[1]/ul/li[5]').click()
-        time.sleep(1)
-        print(".", end="")
-
-        curpages = 1
-
-        driver.find_element_by_xpath(
-            '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(Keys.BACKSPACE)
-        driver.find_element_by_xpath(
-            '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(Keys.BACKSPACE)
-        driver.find_element_by_xpath(
-            '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(str(curpages))
-        driver.find_element_by_xpath(
-            '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[1]').click()
-        time.sleep(1)
-        print(".", end="")
-        pages = driver.find_element_by_class_name('number.active').text
-
-        while str(pages) == str(curpages) and not finded:
-            class_list = driver.find_elements_by_xpath(
-                '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[1]/div')
-            for cl in class_list:
-                class_num = cl.find_element_by_xpath(
-                    './/*[@class="el-card__body"]/div[2]/div/div[2]/span').text
-                print(".", end="")
-                if class_wanted[0:-5] == class_num:
-                    cl.click()
-                    time.sleep(0.2)
-                    print(".", end="")
-                    teacher_list=cl.find_elements_by_xpath(
-                        './/*[@class="card-list course-jxb el-row"]/div')
-                    for tl in teacher_list:
-                        print(".", end="")
-                        teacher_num=tl.find_element_by_xpath(
-                            './/*[@class="card-item head"]/div[1]/span[1]').text
-                        if class_wanted[-3:-1]==teacher_num[1:3]:
-                            print("\n\nfinded\n")
-                            finded = True
-                            Turn=1
-                            elected=False
-                            while not elected:
-                                print("the "+str(Turn)+" trail")
-                                Turn=Turn+1
-                                
-                                tmpErr=False
-                                while not tmpErr:
-                                    try:
-                                        tl.find_element_by_xpath('.//*[@class="el-row"]/button[2]').click()
-                                        tmpErr=True
-                                    except Exception as eTmp:
-                                        tmpErr=False
-
-                                tmpErr=False
-                                while not tmpErr:
-                                    try:
-                                        msgText=driver.find_element_by_xpath('/html/body/div[3]/div/div[2]/div[1]/div[2]/p').text
-                                        tmpErr=True
-                                    except Exception as eTmp:
-                                        tmpErr=False
-
-                                if not (driver.find_element_by_xpath('/html/body/div[3]/div/div[2]/div[1]/div[2]/p').text=="确认选择课程吗？"):
-                                    elected=True
-                                    break
-                                driver.find_element_by_xpath(
-                                    '/html/body/div[3]/div/div[3]/button[2]').click()
-                                
-                            
-                            print("\nelected!\n")
-                            break
-                    break
-            if not finded:
-                curpages = curpages+1
-                driver.find_element_by_xpath(
-                    '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(Keys.BACKSPACE)
-                driver.find_element_by_xpath(
-                    '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(Keys.BACKSPACE)
-                driver.find_element_by_xpath(
-                    '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys('%d' %curpages)
-                driver.find_element_by_xpath(
-                    '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[1]').click()
-                time.sleep(1)
-                print(".", end="")
-                pages = driver.find_element_by_class_name('number.active').text
-
-        driver.find_element_by_xpath('//*[@id="xsxkapp"]/div/div[1]/ul/li[1]/i').click()
-        time.sleep(0.5)
-        print(".", end="")
-        driver.find_element_by_xpath('//*[@id="xsxkapp"]/div/div[1]/ul/li[6]').click()
-        time.sleep(1)
-        print(".", end="")
-
-        curpages = 1
-
-        driver.find_element_by_xpath(
-            '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(Keys.BACKSPACE)
-        driver.find_element_by_xpath(
-            '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(Keys.BACKSPACE)
-        driver.find_element_by_xpath(
-            '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(str(curpages))
-        driver.find_element_by_xpath(
-            '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[1]').click()
-        time.sleep(1)
-        print(".", end="")
-        pages = driver.find_element_by_class_name('number.active').text
-
-        while str(pages) == str(curpages) and not finded:
-            class_list = driver.find_elements_by_xpath(
-                '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[1]/div')
-            for cl in class_list:
-                class_num = cl.find_element_by_xpath(
-                    './/*[@class="el-card__body"]/div[2]/div/div[2]/span[1]').text\
-                    + " "\
-                    + cl.find_element_by_xpath(
-                    './/*[@class="el-card__body"]/div[2]/div/div[2]/span[2]').text
-                print(".", end="")
-                if class_wanted == class_num:
-                    print("\n\nfinded\n")
-                    finded = True
-                    Turn=1
-                    elected=False
-                    while not elected:
-                        print("the "+str(Turn)+" trail")
-                        Turn=Turn+1
-
-                        tmpErr=False
-                        while not tmpErr:
-                            try:
-                                tl.find_element_by_xpath('.//*[@class="el-row"]/button[3]').click()
-                                tmpErr=True
-                            except Exception as eTmp:
-                                tmpErr=False
-
-                        tmpErr=False
-                        while not tmpErr:
-                            try:
-                                msgText=driver.find_element_by_xpath('/html/body/div[3]/div/div[2]/div[1]/div[2]/p').text
-                                tmpErr=True
-                            except Exception as eTmp:
-                                tmpErr=False
-
-                        if not (driver.find_element_by_xpath('/html/body/div[3]/div/div[2]/div[1]/div[2]/p').text=="确认选择课程吗？"):
-                            elected=True
-                            break
-                        driver.find_element_by_xpath(
-                            '/html/body/div[3]/div/div[3]/button[2]').click()
-                                
-                        
-                    
-                    print("\nelected!\n")
-                    break
-            if not finded:
-                curpages = curpages+1
-                driver.find_element_by_xpath(
-                    '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(Keys.BACKSPACE)
-                driver.find_element_by_xpath(
-                    '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys(Keys.BACKSPACE)
-                driver.find_element_by_xpath(
-                    '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[2]/div/input').send_keys('%d' %curpages)
-                driver.find_element_by_xpath(
-                    '//*[@id="xsxkapp"]/div/div[3]/div[3]/div/div[2]/span[1]').click()
-                time.sleep(1)
-                print(".", end="")
-                pages = driver.find_element_by_class_name('number.active').text
-
-        if not finded:
-            print("\n\nnot finded!\n")
-
-        return
-
+        options = webdriver.ChromeOptions()
+        # options.add_argument('--headless')  # Uncomment for headless mode
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        driver = webdriver.Chrome(options=options)
+        Logger.success("WebDriver initialized successfully")
     except Exception as e:
-        print('\tterminated')
-        error = True
-        return
+        Logger.error(f"Failed to initialize WebDriver: {str(e)}")
+        sys.exit(1)
+    
+    try:
+        # Navigate to the course election system
+        driver.get("https://newelection.seu.edu.cn/")  # Replace with actual URL
+        Logger.info("Navigating to course election system...")
+        time.sleep(2)
+        
+        # Define courses to elect
+        # Format: {'name': 'course_name', 'menu_index': 0-4, 'button_index': 0 (default)}
+        # menu_index: 0=第一轮, 1=系统推荐课程(TJKC), 2=第二轮, 3=第三轮, 4=第四轮
+        courses = [
+            {'name': '高等数学(一)', 'menu_index': 0},  # First turn
+            {'name': '数据结构', 'menu_index': 1},      # System recommendation
+            {'name': '操作系统', 'menu_index': 2},      # Second turn
+            {'name': '数据库原理', 'menu_index': 3},    # Third turn
+            {'name': '编译原理', 'menu_index': 4},      # Fourth turn
+        ]
+        
+        # You can also specify button_index if multiple results exist
+        # {'name': 'course_name', 'menu_index': 0, 'button_index': 1}
+        
+        # Execute elections
+        Logger.info(f"Starting election process for {len(courses)} course(s)...")
+        stats = elect_courses(driver, courses)
+        
+        # Print results
+        print_election_statistics(stats)
+        
+        # Keep browser open for verification (optional)
+        if stats['failed'] == 0:
+            Logger.success("All courses elected successfully!")
+        else:
+            Logger.warning(f"Some courses failed to elect. Please review the failed list.")
+        
+        # Uncomment below to keep browser open for debugging
+        # input("Press Enter to close the browser...")
+        
+    except Exception as e:
+        Logger.error(f"An error occurred in main execution: {str(e)}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        driver.quit()
+        Logger.info("WebDriver closed")
 
-
-if __name__ == '__main__':
-    if "NAME" in os.environ:
-        username = os.environ["NAME"]
-    else:
-        sys.exit()
-
-    if "PASSWORD" in os.environ:
-        password = os.environ["PASSWORD"]
-    else:
-        sys.exit() 
-
-    if "TURN" in os.environ:
-        elecTurn = os.environ["TURN"]
-    else:
-        elecTurn = "1"
-
-    if "CLASS" in os.environ:
-        class_wanted = os.environ["CLASS"]
-    else:
-        sys.exit()
-
-    error = False
-    Login()
-    if not error:
-        main()
+if __name__ == "__main__":
+    main()
